@@ -8,6 +8,18 @@ import pandas as pd
 import yaml
 from excel_to_notion import ExcelToNotionImporter
 import time
+import sys
+
+
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 
 class SmashTeamGenerator(tk.Tk):
@@ -25,7 +37,12 @@ class SmashTeamGenerator(tk.Tk):
         # Notion 관련 정보 설정
         self.parent_page_id = "1a39f0ea074e80e085a5dbe8bfa5404f"
         self.template_page_id = "1a79f0ea074e807b9b18c586b0890893"
-        self.excel_file_path = "팀_구성_결과.xlsx"
+        # 사용자 문서 폴더에 저장
+
+        # Windows: `C:\Users\사용자이름`
+        # macOS: `/ Users/사용자이름`
+        documents_path = os.path.join(os.path.expanduser("~"), "Documents")
+        self.excel_file_path = os.path.join(documents_path, "팀_구성_결과.xlsx")
         self.notion_page_url = None  # 생성된 Notion 페이지 URL 저장
 
         # GUI 스타일 초기화
@@ -85,14 +102,16 @@ class SmashTeamGenerator(tk.Tk):
         # tmp 예시추가
         if example == "jielong":
             try:
-                with open('examples/jielong.txt', 'r', encoding='utf-8') as f:
+                file_path = resource_path('examples/jielong.txt')
+                with open(file_path, 'r', encoding='utf-8') as f:
                     example_text = f.read()
                     text_widget.insert(tk.END, example_text)
             except FileNotFoundError:
                 print("jielong 예시 파일이 존재하지 않습니다")
         elif example == "lesson":
             try:
-                with open('examples/lesson.txt', 'r', encoding='utf-8') as f:
+                file_path = resource_path('examples/lesson.txt')
+                with open(file_path, 'r', encoding='utf-8') as f:
                     example_text = f.read()
                     text_widget.insert(tk.END, example_text)
             except FileNotFoundError:
@@ -237,7 +256,8 @@ class SmashTeamGenerator(tk.Tk):
                 # print(lesson_names_list)
 
             # 2. 그룹 데이터 로드
-            with open('groups.yaml', 'r', encoding='utf-8') as f:
+            yaml_path = resource_path('groups.yaml')
+            with open(yaml_path, 'r', encoding='utf-8') as f:
                 groups_data = yaml.safe_load(f)
 
             # 3. 1st 페어링 편성
@@ -355,7 +375,7 @@ class SmashTeamGenerator(tk.Tk):
                     self.solo_indices.append(i)
 
             # Excel 파일 생성
-            with pd.ExcelWriter('팀_구성_결과.xlsx', engine='xlsxwriter') as writer:
+            with pd.ExcelWriter(self.excel_file_path, engine='xlsxwriter') as writer:
                 # 페어링 데이터프레임 생성
                 pairing_df = pd.DataFrame(pair_data, columns=['t1', 't2'])
 
