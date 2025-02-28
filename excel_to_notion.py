@@ -302,7 +302,7 @@ if __name__ == "__main__":
     parent_page_id = "1a39f0ea074e80e085a5dbe8bfa5404f"
     # 조 편성 양식 템플릿
     template_page_id = "1a79f0ea074e807b9b18c586b0890893"
-    excel_file_path = "팀_구성_결과.xlsx"
+    excel_file_path = "team_composition_result.xlsx"
 
     t1 = time.time()
     cloner = ExcelToNotionImporter(

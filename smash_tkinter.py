@@ -54,7 +54,8 @@ class SmashTeamGenerator(tk.Tk):
         self.ensure_yaml_file_exists()
 
         # 엑셀 파일 저장 경로 설정
-        self.excel_file_path = os.path.join(self.config_dir, "팀_구성_결과.xlsx")
+        self.excel_file_path = os.path.join(
+            self.config_dir, "team_composition_result.xlsx")
         self.notion_page_url = None  # 생성된 Notion 페이지 URL 저장
 
         # GUI 스타일 초기화
