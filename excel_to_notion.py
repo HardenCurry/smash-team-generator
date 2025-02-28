@@ -1,24 +1,30 @@
-import os
+# import os
+# import time
 from dotenv import load_dotenv
 from notion_client import Client
-import time
 from datetime import datetime
 from pprint import pprint
 import pandas as pd
+import concurrent.futures  # 병렬 처리를 위한 라이브러리 추가
 
 
 class ExcelToNotionImporter:
-    def __init__(self, notion_token, parent_page_id, template_page_id, excel_file_path=None, lesson_indices=None):
+    def __init__(self, notion_token, parent_page_id, template_page_id, excel_file_path=None, lesson_indices=None,
+                 max_workers=3, use_concurrent=True):
         # 토큰 및 페이지 ID 설정
         self.NOTION_TOKEN = notion_token
         self.parent_page_id = parent_page_id
         self.template_page_id = template_page_id
         self.table_id_list = []
-        self.lesson_indices = lesson_indices
+        self.lesson_indices = lesson_indices or []
         self.total_people = 0
         # excel 관련
         self.excel_file_path = excel_file_path
         self.excel_data = None
+
+        # 성능 최적화 관련 파라미터
+        self.max_workers = max_workers  # 병렬 작업자 수
+        self.use_concurrent = use_concurrent  # 병렬 처리 사용 여부
 
         # Excel 데이터 로드 (파일 경로가 제공된 경우)
         if excel_file_path:
@@ -63,6 +69,7 @@ class ExcelToNotionImporter:
                 child_data = self.process_block(child)
                 if child_data:
                     children_data.append(child_data)
+
             # 블록 속성 복사 및 자식 추가
             block_properties = block[block_type].copy()
             block_properties['children'] = children_data
@@ -79,7 +86,7 @@ class ExcelToNotionImporter:
             }
 
     def update_block(self):
-        """테이블 블록 업데이트 함수"""
+        """테이블 블록 업데이트 함수 (최적화 버전)"""
 
         def get_all_block(block):
             """새로운 페이지에 있는 모든 블록 조회 & table_id_list 추가"""
@@ -94,173 +101,151 @@ class ExcelToNotionImporter:
                 for child in children_blocks:
                     get_all_block(child)
 
+        # 모든 테이블 ID 가져오기
         block_list = self.notion.blocks.children.list(self.new_page_id)
         for block in block_list['results']:
             get_all_block(block)
 
-        for i, table_id in enumerate(self.table_id_list):
+        # 병렬 처리를 위한 함수 정의
+        def update_table(table_index):
+            table_id = self.table_id_list[table_index]
+            if table_index == 0:  # 기본 정보 테이블
+                return self._update_basic_info_table(table_id)
+            elif table_index == 1 and 'pairing' in self.excel_data:  # 페어링 테이블
+                return self._update_pairing_table(table_id)
+            elif table_index == 2 and 'teams' in self.excel_data:  # 조편성 테이블
+                return self._update_teams_table(table_id)
+            return None
+
+        # 병렬 처리 수행 (선택적)
+        if self.use_concurrent and len(self.table_id_list) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(self.table_id_list), self.max_workers)) as executor:
+                futures = [executor.submit(update_table, i)
+                           for i in range(len(self.table_id_list))]
+                concurrent.futures.wait(futures)
+        else:
+            # 순차 처리
+            for i in range(len(self.table_id_list)):
+                update_table(i)
+
+    def _update_basic_info_table(self, table_id):
+        """기본 정보 테이블 업데이트"""
+        basic_info = ["", "", self.total_people, "21:00-23:00"]
+        cells = []
+        for cell_value in basic_info:
+            cell = [{
+                "type": "text",
+                "text": {"content": str(cell_value)},
+                "annotations": {
+                    "bold": False, "code": False, "color": "default",
+                    "italic": False, "strikethrough": False, "underline": False
+                }
+            }]
+            cells.append(cell)
+
+        self.notion.blocks.children.append(
+            block_id=table_id,
+            children=[{
+                "object": "block",
+                "type": "table_row",
+                "table_row": {"cells": cells}
+            }]
+        )
+        return "basic_info_updated"
+
+    def _update_pairing_table(self, table_id):
+        """페어링 테이블 업데이트"""
+        df = self.excel_data['pairing']
+        columns = df.columns.tolist()
+        print(f"페어링 시트 데이터 추가 중... (총 {len(df)}행)")
+
+        all_rows = []
+        for idx, row in df.iterrows():
             cells = []
-            all_rows = []
-            # 맨위 테이블
-            if i == 0:
-                # 코트,레슨 코트,총 인원,시간
-                basic_info = ["", "", self.total_people, "21:00-23:00"]
-                for cell_value in basic_info:
-                    # 셀 텍스트 배열 생성
-                    cell = [{
-                        "type": "text",
-                        "text": {
-                            "content": str(cell_value)
-                        },
-                        "annotations": {
-                            "bold": False,
-                            "code": False,
-                            "color": "default",
-                            "italic": False,
-                            "strikethrough": False,
-                            "underline": False
-                        }
-                    }]
-                    cells.append(cell)
-                # 테이블에 새 행 추가
-                self.notion.blocks.children.append(
-                    block_id=table_id,
-                    children=[{
-                        "object": "block",
-                        "type": "table_row",
-                        "table_row": {
-                            "cells": cells
-                        }
-                    }]
-                )
+            # 인덱스 (1부터 시작)
+            cells.append([{"type": "text", "text": {"content": str(idx + 1)}}])
 
-            # 페어링 sheet 넣기
-            elif i == 1 and 'pairing' in self.excel_data:
-                df = self.excel_data['pairing']
-                print(f"페어링 시트 데이터 추가 중... (총 {len(df)}행)")
+            # 레슨생 여부 확인
+            is_lesson = idx in self.lesson_indices
 
-                columns = df.columns.tolist()
-                # 각 행 추가
-                for idx, row in df.iterrows():
-                    cells = []
+            # 컬럼 데이터 추가
+            for col in columns:
+                cell_value = str(row[col]) if not pd.isna(row[col]) else ""
 
-                    # 첫 번째 셀: 인덱스 (1부터 시작)
-                    cells.append([{
-                        "type": "text",
-                        "text": {
-                            "content": str(idx + 1)
-                        }
-                    }])
+                # 레슨생인 경우 노랑색 배경 적용
+                text_obj = {
+                    "type": "text",
+                    "text": {"content": cell_value}
+                }
 
-                    # 레슨생 여부 확인 - 인덱스가 lesson_indices에 있는지 확인
-                    is_lesson = idx in self.lesson_indices
+                if is_lesson:
+                    text_obj["annotations"] = {
+                        "bold": False, "code": False, "color": "yellow_background",
+                        "italic": False, "strikethrough": False, "underline": False
+                    }
 
-                    # 두 번째와 세 번째 셀: Excel 데이터의 두 컬럼
-                    for col in columns:
-                        cell_value = str(row[col]) if not pd.isna(
-                            row[col]) else ""
+                cells.append([text_obj])
 
-                        # 레슨생인 경우 노랑색 배경 적용
-                        if is_lesson:
-                            cells.append([{
-                                "type": "text",
-                                "text": {
-                                    "content": cell_value
-                                },
-                                "annotations": {
-                                    "bold": False,
-                                    "code": False,
-                                    "color": "yellow_background",
-                                    "italic": False,
-                                    "strikethrough": False,
-                                    "underline": False
-                                }
-                            }])
-                        else:
-                            cells.append([{
-                                "type": "text",
-                                "text": {
-                                    "content": cell_value
-                                }
-                            }])
+            all_rows.append({
+                "object": "block",
+                "type": "table_row",
+                "table_row": {"cells": cells}
+            })
 
-                    all_rows.append({
-                        "object": "block",
-                        "type": "table_row",
-                        "table_row": {
-                            "cells": cells
-                        }
-                    })
-                # 테이블에 새 행 추가
-                self.notion.blocks.children.append(
-                    block_id=table_id,
-                    children=all_rows
-                )
+        # 한 번에 모든 행 추가
+        self.notion.blocks.children.append(
+            block_id=table_id,
+            children=all_rows
+        )
+        print(f"페어링 테이블 업데이트 완료 ({len(df)} 행 추가)")
+        return "pairing_updated"
 
-                print(f"페어링 테이블 업데이트 완료 ({len(df)} 행 추가)")
+    def _update_teams_table(self, table_id):
+        """조편성 테이블 업데이트"""
+        df = self.excel_data['teams']
+        columns = df.columns.tolist()
+        print(f"조편성 시트 데이터 추가 중... (총 {len(df)}행)")
 
-            # 조편성 sheet 넣기
-            elif i == 2 and 'teams' in self.excel_data:
-                df = self.excel_data['teams']
-                columns = df.columns.tolist()
-                print(f"조편성 시트 데이터 추가 중... (총 {len(df)}행)")
+        all_rows = []
+        for idx, row in df.iterrows():
+            cells = []
+            # 인덱스 (1부터 시작)
+            cells.append([{"type": "text", "text": {"content": str(idx + 1)}}])
 
-                # 빈 all_rows 배열 초기화
-                all_rows = []
+            # 컬럼 데이터 추가 (배경색 지정)
+            for col_idx, col in enumerate(columns):
+                cell_value = str(row[col]) if not pd.isna(row[col]) else ""
 
-                # 각 행 추가
-                for idx, row in df.iterrows():
-                    cells = []
-                    # 첫 번째 셀: 인덱스 (1부터 시작) - 배경색 없음
-                    cells.append([{
-                        "type": "text",
-                        "text": {
-                            "content": str(idx + 1)
-                        }
-                    }])
+                # 컬럼 순서에 따라 다른 배경색 적용
+                if col_idx == 0:
+                    bg_color = "green_background"
+                elif col_idx == 1:
+                    bg_color = "blue_background"
+                else:
+                    bg_color = "purple_background"
 
-                    # Excel 데이터의 컬럼들 - 순서에 따라 다른 배경색 적용
-                    for col_idx, col in enumerate(columns):
-                        cell_value = str(row[col]) if not pd.isna(
-                            row[col]) else ""
+                cells.append([{
+                    "type": "text",
+                    "text": {"content": cell_value},
+                    "annotations": {
+                        "bold": False, "code": False, "color": bg_color,
+                        "italic": False, "strikethrough": False, "underline": False
+                    }
+                }])
 
-                        # 컬럼 순서에 따라 다른 배경색 적용
-                        if col_idx == 0:  # 첫 번째 데이터 열
-                            bg_color = "green_background"
-                        elif col_idx == 1:  # 두 번째 데이터 열
-                            bg_color = "blue_background"
-                        else:  # 세 번째 데이터 열 (및 그 이상)
-                            bg_color = "purple_background"
+            all_rows.append({
+                "object": "block",
+                "type": "table_row",
+                "table_row": {"cells": cells}
+            })
 
-                        cells.append([{
-                            "type": "text",
-                            "text": {
-                                "content": cell_value
-                            },
-                            "annotations": {
-                                "bold": False,
-                                "code": False,
-                                "color": bg_color,
-                                "italic": False,
-                                "strikethrough": False,
-                                "underline": False
-                            }
-                        }])
-
-                    all_rows.append({
-                        "object": "block",
-                        "type": "table_row",
-                        "table_row": {
-                            "cells": cells
-                        }
-                    })
-
-                # 테이블에 새 행 추가
-                self.notion.blocks.children.append(
-                    block_id=table_id,
-                    children=all_rows
-                )
-                print(f"조편성 테이블 업데이트 완료 ({len(df)} 행 추가)")
+        # 한 번에 모든 행 추가
+        self.notion.blocks.children.append(
+            block_id=table_id,
+            children=all_rows
+        )
+        print(f"조편성 테이블 업데이트 완료 ({len(df)} 행 추가)")
+        return "teams_updated"
 
     def duplicate_template_page(self):
         # 페이지 생성 로직
@@ -287,14 +272,20 @@ class ExcelToNotionImporter:
 
         # 템플릿 페이지 child 블록 가져오기
         block_list = self.notion.blocks.children.list(self.template_page_id)
+
+        # 모든 블록을 한 번에 처리하기 위한 리스트
+        all_blocks = []
         for block in block_list['results']:
             processed_block = self.process_block(block)
             if processed_block:
-                # 부모 table 블록 생성
-                self.notion.blocks.children.append(
-                    block_id=self.new_page_id,
-                    children=[processed_block]
-                )
+                all_blocks.append(processed_block)
+
+        # 모든 블록을 한 번에 추가 (API 호출 최소화)
+        if all_blocks:
+            self.notion.blocks.children.append(
+                block_id=self.new_page_id,
+                children=all_blocks
+            )
 
         new_page_url = f"https://notion.so/{self.new_page_id.replace('-', '')}"
         return new_page_url

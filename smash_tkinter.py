@@ -9,6 +9,8 @@ import yaml
 from excel_to_notion import ExcelToNotionImporter
 import time
 import sys
+import subprocess
+import configparser
 
 
 def resource_path(relative_path):
@@ -27,22 +29,32 @@ class SmashTeamGenerator(tk.Tk):
         super().__init__()
         self.title("스매시 조 편성기 v2.0")
         self.geometry("1200x800")
-        self.config_file = "smash_config.json"
-        # .env 파일 읽기
-        load_dotenv()
-        # 스매시 페이지 토큰값
-        self.NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-        if not self.NOTION_TOKEN:
-            raise ValueError("NOTION_TOKEN이 .env에 설정되지 않았습니다.")
-        # Notion 관련 정보 설정
-        self.parent_page_id = "1a39f0ea074e80e085a5dbe8bfa5404f"
-        self.template_page_id = "1a79f0ea074e807b9b18c586b0890893"
-        # 사용자 문서 폴더에 저장
 
+        # 사용자 문서 폴더에 저장
         # Windows: `C:\Users\사용자이름`
         # macOS: `/ Users/사용자이름`
         documents_path = os.path.join(os.path.expanduser("~"), "Documents")
-        self.excel_file_path = os.path.join(documents_path, "팀_구성_결과.xlsx")
+        self.config_dir = os.path.join(documents_path, "SmashTeamGenerator")
+        os.makedirs(self.config_dir, exist_ok=True)
+
+        # 설정 파일 경로
+        self.config_file_path = os.path.join(self.config_dir, "config.ini")
+
+        # Notion 토큰 초기화
+        self.NOTION_TOKEN = self.load_notion_token()
+
+        # Notion 관련 정보 설정
+        self.parent_page_id = "1a39f0ea074e80e085a5dbe8bfa5404f"
+        self.template_page_id = "1a79f0ea074e807b9b18c586b0890893"
+
+        # YAML 파일 경로 설정
+        self.yaml_file_path = os.path.join(self.config_dir, "groups.yaml")
+
+        # 기본 YAML 파일이 없으면 기본 파일 복사
+        self.ensure_yaml_file_exists()
+
+        # 엑셀 파일 저장 경로 설정
+        self.excel_file_path = os.path.join(self.config_dir, "팀_구성_결과.xlsx")
         self.notion_page_url = None  # 생성된 Notion 페이지 URL 저장
 
         # GUI 스타일 초기화
@@ -202,6 +214,12 @@ class SmashTeamGenerator(tk.Tk):
         ttk.Button(btn_frame, text="초기화",
                    command=self.clear_inputs).pack(side=tk.LEFT, padx=5)
 
+        # 새 버튼 추가: 그룹 설정 편집과 결과 폴더 열기
+        ttk.Button(btn_frame, text="그룹 설정 편집",
+                   command=self.open_yaml_editor).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="결과 폴더 열기",
+                   command=self.open_result_folder).pack(side=tk.LEFT, padx=5)
+
         # Notion 링크 표시 레이블 추가
         self.notion_link_frame = ttk.Frame(result_frame)
         self.notion_link_frame.pack(pady=5)
@@ -255,10 +273,17 @@ class SmashTeamGenerator(tk.Tk):
                 print(f"레슨 인원: {len(lesson_names_list)} 명")
                 # print(lesson_names_list)
 
-            # 2. 그룹 데이터 로드
-            yaml_path = resource_path('groups.yaml')
-            with open(yaml_path, 'r', encoding='utf-8') as f:
-                groups_data = yaml.safe_load(f)
+            # 2. 그룹 데이터 로드 (사용자 문서 폴더에서)
+            try:
+                with open(self.yaml_file_path, 'r', encoding='utf-8') as f:
+                    groups_data = yaml.safe_load(f)
+            except FileNotFoundError:
+                # 파일이 없는 경우 기본 파일에서 로드
+                yaml_path = resource_path('groups.yaml')
+                with open(yaml_path, 'r', encoding='utf-8') as f:
+                    groups_data = yaml.safe_load(f)
+                # 파일이 사라진 경우 다시 생성
+                self.ensure_yaml_file_exists()
 
             # 3. 1st 페어링 편성
             # 3.1 접룡 인원 정렬
@@ -417,8 +442,11 @@ class SmashTeamGenerator(tk.Tk):
                     index=False,
                 )
 
-            self.status_bar.config(text="엑셀 추출 완료: 팀_구성_결과.xlsx")
-            messagebox.showinfo("성공", "엑셀 파일이 성공적으로 저장되었습니다")
+            self.status_bar.config(text=f"엑셀 추출 완료: {self.excel_file_path}")
+            messagebox.showinfo("성공",
+                                f"엑셀 파일이 성공적으로 저장되었습니다.\n\n"
+                                f"저장 위치: {self.excel_file_path}\n\n"
+                                f"'결과 폴더 열기' 버튼을 클릭하여 파일을 찾을 수 있습니다.")
 
         except Exception as e:
             messagebox.showerror("오류", str(e))
@@ -500,7 +528,7 @@ class SmashTeamGenerator(tk.Tk):
                 self.parent_page_id,
                 self.template_page_id,
                 self.excel_file_path,
-                self.lesson_indices
+                lesson_indices,
             )
 
             # 템플릿 페이지 복제
@@ -537,16 +565,163 @@ class SmashTeamGenerator(tk.Tk):
             messagebox.showinfo("성공", "Notion에 팀 구성 데이터가 성공적으로 업로드되었습니다.")
 
         except Exception as e:
-            # 오류 발생 시 처리
+            error_msg = str(e)
             self.notion_link_label.config(text="")
             self.notion_status_label.config(text="업로드 실패", foreground="red")
-            self.status_bar.config(text=f"Notion 업로드 오류: {str(e)}")
-            messagebox.showerror("Notion 업로드 오류", str(e))
+            self.status_bar.config(text=f"Notion 업로드 오류: {error_msg}")
+
+            # EOF 오류 발생 시 VPN 관련 메시지 표시
+            if "EOF occurred" in error_msg or "violation" in error_msg.lower():
+                messagebox.showerror("Notion 업로드 오류",
+                                     f"네트워크 연결 오류가 발생했습니다: {error_msg}\n\n"
+                                     "VPN이 켜져 있다면 끄고 다시 시도해보세요.")
+            else:
+                messagebox.showerror("Notion 업로드 오류", error_msg)
 
     def open_notion_page(self, event):
         """Notion 페이지 링크 클릭 시 웹 브라우저에서 열기"""
         if self.notion_page_url:
             webbrowser.open(self.notion_page_url)
+
+    def ensure_yaml_file_exists(self):
+        """기본 YAML 파일이 없으면 기본 파일을 복사"""
+        if not os.path.exists(self.yaml_file_path):
+            # 기본 YAML 파일(패키지에 포함된) 경로
+            default_yaml_path = resource_path('groups.yaml')
+
+            try:
+                # 기본 파일 내용 읽기
+                with open(default_yaml_path, 'r', encoding='utf-8') as src_file:
+                    yaml_content = src_file.read()
+
+                # 사용자 디렉토리에 파일 복사
+                with open(self.yaml_file_path, 'w', encoding='utf-8') as dst_file:
+                    dst_file.write(yaml_content)
+            except Exception as e:
+                print(f"YAML 파일 복사 중 오류: {e}")
+
+    def open_yaml_editor(self):
+        """YAML 파일을 시스템 기본 에디터로 열기"""
+        try:
+            if os.name == 'nt':  # Windows
+                os.startfile(self.yaml_file_path)
+            elif os.name == 'posix':  # macOS, Linux
+                if sys.platform == 'darwin':  # macOS
+                    subprocess.call(('open', self.yaml_file_path))
+                else:  # Linux
+                    subprocess.call(('xdg-open', self.yaml_file_path))
+
+            messagebox.showinfo("안내",
+                                "그룹 설정 파일이 열렸습니다.\n\n"
+                                "파일을 편집한 후 저장하고, 프로그램에서 '팀 생성' 버튼을 다시 클릭하면 "
+                                "그룹 파일 변경 사항이 적용됩니다.")
+        except Exception as e:
+            messagebox.showerror("오류", f"파일을 열 수 없습니다: {e}")
+
+    def open_result_folder(self):
+        """결과 파일이 저장된 폴더 열기"""
+        try:
+            if os.name == 'nt':  # Windows
+                os.startfile(self.config_dir)
+            elif os.name == 'posix':  # macOS, Linux
+                if sys.platform == 'darwin':  # macOS
+                    subprocess.call(('open', self.config_dir))
+                else:  # Linux
+                    subprocess.call(('xdg-open', self.config_dir))
+        except Exception as e:
+            messagebox.showerror("오류", f"폴더를 열 수 없습니다: {e}")
+
+    def load_notion_token(self):
+        """설정 파일에서 Notion 토큰을 로드하거나 사용자에게 요청"""
+        config = configparser.ConfigParser()
+
+        # 기본 토큰 (개발용, 실제 배포 시 빈 문자열로 변경)
+        default_token = ""
+
+        # 설정 파일이 있는지 확인
+        if os.path.exists(self.config_file_path):
+            try:
+                config.read(self.config_file_path)
+                if 'Notion' in config and 'token' in config['Notion']:
+                    return config['Notion']['token']
+            except Exception as e:
+                print(f"설정 파일 로드 중 오류: {e}")
+
+        # 설정 파일이 없거나 토큰이 없으면 사용자에게 요청
+        token = self.ask_for_notion_token(default_token)
+
+        # 새 토큰 저장
+        if token:
+            if not 'Notion' in config:
+                config['Notion'] = {}
+            config['Notion']['token'] = token
+
+            try:
+                with open(self.config_file_path, 'w') as f:
+                    config.write(f)
+            except Exception as e:
+                print(f"설정 파일 저장 중 오류: {e}")
+
+        return token
+
+    def ask_for_notion_token(self, default_token=""):
+        """사용자에게 Notion 토큰을 요청하는 다이얼로그"""
+        dialog = tk.Toplevel(self)
+        dialog.title("Notion 토큰 설정")
+        dialog.geometry("500x200")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        # 창 중앙 위치
+        self.update_idletasks()
+        main_x = self.winfo_x()
+        main_y = self.winfo_y()
+        main_width = self.winfo_width()
+        main_height = self.winfo_height()
+        dialog.geometry(
+            f"+{main_x + (main_width//2 - 250)}+{main_y + (main_height//2 - 100)}")
+
+        tk.Label(dialog, text="Notion 통합을 위한 API 토큰을 입력해주세요.",
+                 font=('맑은 고딕', 10, 'bold')).pack(pady=(15, 5))
+        tk.Label(dialog, text="※ 토큰은 컴퓨터에 안전하게 저장됩니다.",
+                 font=('맑은 고딕', 9)).pack(pady=(0, 10))
+
+        token_var = tk.StringVar(value=default_token)
+        token_entry = tk.Entry(
+            dialog, textvariable=token_var, width=50, show="*")
+        token_entry.pack(pady=5, padx=20)
+
+        # 토큰 표시/숨김 체크박스
+        show_var = tk.BooleanVar(value=False)
+
+        def toggle_show():
+            if show_var.get():
+                token_entry.config(show="")
+            else:
+                token_entry.config(show="*")
+
+        tk.Checkbutton(dialog, text="토큰 표시", variable=show_var,
+                       command=toggle_show).pack(pady=5)
+
+        def on_confirm():
+            dialog.token = token_var.get().strip()
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.token = default_token
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="확인", command=on_confirm,
+                  width=10).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="취소", command=on_cancel,
+                  width=10).pack(side=tk.LEFT, padx=10)
+
+        dialog.wait_window()
+        return getattr(dialog, 'token', default_token)
 
 
 if __name__ == "__main__":
