@@ -44,7 +44,7 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --name "smash_team_generator" --windowed --onefile --icon=badminton.icns --add-data "groups.yaml:." --add-data "examples/jielong.txt:examples" --add-data "examples/lesson.txt:examples" smash_tkinter.py
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: macos-build
           path: dist/smash_team_generator
